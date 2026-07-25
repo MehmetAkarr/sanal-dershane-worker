@@ -1,8 +1,8 @@
-FROM python:3.10-slim
+FROM pytorch/pytorch:2.1.2-cuda11.8-cudnn8-runtime
 
 WORKDIR /app
 
-# Gerekli sistem kütüphanelerini kur (Ses işleme ve PyTorch derlemeleri için tam donanım)
+# Gerekli sistem kütüphanelerini kur (Ses işleme ve işletim sistemi araçları)
 RUN apt-get update && apt-get install -y \
     libsndfile1 \
     ffmpeg \
