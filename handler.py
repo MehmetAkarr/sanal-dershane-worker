@@ -35,5 +35,6 @@ def handler(job):
         }
     except Exception as e:
         return {"error": str(e)}
-
-runpod.serverless.start({"handler": handler})
+if __name__ == "__main__":
+       # RunPod Serverless sistemini baslatir
+       runpod.serverless.start({"handler": handler})
