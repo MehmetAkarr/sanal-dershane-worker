@@ -15,7 +15,6 @@ except ImportError as e:
 
 # Global model değişkeni
 model = None
-# DİKKAT: Dosya uzantısı GitHub'daki adına birebir uyacak şekilde BÜYÜK harfle yazıldı
 REFERENCE_AUDIO_PATH = "zumrut_hoca.WAV" 
 
 def initialize_model():
@@ -41,8 +40,9 @@ def initialize_model():
     print(f"Kullanılan donanım birimi: {device}")
     
     try:
-        # V3 Çok Dilli (Türkçe destekli) modelin başlatılması
-        model = ChatterboxMultilingualTTS.from_pretrained(device=device, t3_model="v3")
+        # HATA DÜZELTİLDİ: t3_model="v3" parametresi kaldırıldı. 
+        # Mevcut stabil sürüm üzerinden başlatılacak.
+        model = ChatterboxMultilingualTTS.from_pretrained(device=device)
         print("Model başarıyla VRAM'e yüklendi!")
     except Exception as e:
         print(f"Model başlatılırken kritik bir hata oluştu: {str(e)}")
@@ -74,12 +74,12 @@ def handler(job):
             audio_prompt_path=REFERENCE_AUDIO_PATH
         )
 
-        # 3. Sesi Disk Yerine Bellekte (RAM) İşleme (Düşük Gecikme İçin)
+        # 3. Sesi Disk Yerine Bellekte (RAM) İşleme
         buffer = io.BytesIO()
         ta.save(buffer, wav, model.sr, format="wav")
         buffer.seek(0)
         
-        # Base64'e çevirip Frontend'e (WebSocket'e) hazır hale getirme
+        # Base64'e çevirip Frontend'e hazırlama
         audio_base64 = base64.b64encode(buffer.read()).decode('utf-8')
 
         return {
