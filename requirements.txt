@@ -1,0 +1,5 @@
+runpod==1.6.2
+scipy
+torch
+torchaudio
+# chatterbox-tts veya spesifik bağımlılıklar buraya eklenebilir.
