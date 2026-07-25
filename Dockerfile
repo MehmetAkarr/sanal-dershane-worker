@@ -1,20 +1,89 @@
-# RunPod'un kendi ekran kartları için özel hazırladığı, her şeyin kurulu olduğu resmi kalıp
-FROM runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04
+import os
+import base64
+import traceback
+import io
+import runpod
 
-WORKDIR /app
+# 1. Kütüphaneleri Güvenli İçe Aktarma
+try:
+    import torch
+    import torchaudio as ta
+    from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+except ImportError as e:
+    ChatterboxMultilingualTTS = None
+    print(f"KRİTİK HATA: İçe aktarma sorunu. requirements.txt dosyanı kontrol et. Detay: {e}")
 
-# İşletim sistemi güncellemeleri ve ses araçları (ffmpeg)
-RUN apt-get update && apt-get install -y \
-    libsndfile1 \
-    ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+# Global model değişkeni
+model = None
+REFERENCE_AUDIO_PATH = "zumrut_hoca.WAV" 
 
-# Kütüphaneleri kur (PyTorch zaten ana kalıpta olduğu için anında kurulacak)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+def initialize_model():
+    """Modeli sadece ilk istek geldiğinde (Cold Boot) yükler."""
+    global model
+    
+    if ChatterboxMultilingualTTS is None:
+        raise RuntimeError("Chatterbox kütüphanesi yüklenemediği için model başlatılamıyor.")
 
-# Zümrüt Hoca'nın sesini ve kodları kopyala
-COPY . .
+    if not os.path.exists(REFERENCE_AUDIO_PATH):
+        raise FileNotFoundError(f"Referans ses dosyası bulunamadı: {REFERENCE_AUDIO_PATH}")
 
-# Sistemi ateşle
-CMD ["python", "-u", "handler.py"]
+    print("Zümrüt Hoca modeli yükleniyor (Cold Boot)...")
+    
+    # BALYOZ HAMLESİ: GPU çakışmasını önlemek için sistemi ZORLA CPU'da çalıştırıyoruz!
+    device = "cpu"
+    print(f"Kullanılan donanım birimi: {device} (GPU uyumsuzluğu aşıldı)")
+    
+    try:
+        model = ChatterboxMultilingualTTS.from_pretrained(device=device)
+        print("Model başarıyla RAM'e yüklendi!")
+    except Exception as e:
+        print(f"Model başlatılırken kritik bir hata oluştu: {str(e)}")
+        traceback.print_exc()
+        raise e
+
+def handler(job):
+    """RunPod Serverless İşleyici"""
+    global model
+    
+    try:
+        job_input = job.get("input", {})
+        text = job_input.get("text", "")
+        
+        if not text:
+            return {"error": "Lütfen Zümrüt Hoca'nın okuması için bir 'text' parametresi gönderin."}
+
+        if model is None:
+            initialize_model()
+
+        print(f"Sentezlenen metin: {text[:50]}...")
+
+        # Üretim Aşaması
+        wav = model.generate(
+            text, 
+            language_id="tr", 
+            audio_prompt_path=REFERENCE_AUDIO_PATH
+        )
+
+        buffer = io.BytesIO()
+        ta.save(buffer, wav, model.sr, format="wav")
+        buffer.seek(0)
+        
+        audio_base64 = base64.b64encode(buffer.read()).decode('utf-8')
+
+        return {
+            "status": "success",
+            "audio_base64": audio_base64
+        }
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f"İşlem sırasında hata: {error_msg}")
+        traceback.print_exc()
+        return {
+            "error": "Sentezleme başarısız.",
+            "details": error_msg,
+            "traceback": traceback.format_exc()
+        }
+
+if __name__ == "__main__":
+    runpod.serverless.start({"handler": handler})
