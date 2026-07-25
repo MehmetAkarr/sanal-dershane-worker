@@ -2,5 +2,3 @@ runpod==1.6.2
 chatterbox-tts
 numpy==1.26.4
 soundfile
-torch
-torchaudio
