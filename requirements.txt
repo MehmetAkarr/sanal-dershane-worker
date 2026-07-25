@@ -1,5 +1,4 @@
 runpod==1.6.2
-scipy
-torch
-torchaudio
-# chatterbox-tts veya spesifik bağımlılıklar buraya eklenebilir.
+chatterbox-tts
+numpy==1.26.4
+soundfile
