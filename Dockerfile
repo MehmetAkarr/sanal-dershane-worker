@@ -1,89 +1,19 @@
-import os
-import base64
-import traceback
-import io
-import runpod
+# RunPod'un en güncel ekran kartlarını tanıyan 12.1 altyapısı
+FROM runpod/pytorch:2.2.1-py3.10-cuda12.1.1-devel-ubuntu22.04
 
-# 1. Kütüphaneleri Güvenli İçe Aktarma
-try:
-    import torch
-    import torchaudio as ta
-    from chatterbox.mtl_tts import ChatterboxMultilingualTTS
-except ImportError as e:
-    ChatterboxMultilingualTTS = None
-    print(f"KRİTİK HATA: İçe aktarma sorunu. requirements.txt dosyanı kontrol et. Detay: {e}")
+WORKDIR /app
 
-# Global model değişkeni
-model = None
-REFERENCE_AUDIO_PATH = "zumrut_hoca.WAV" 
+RUN apt-get update && apt-get install -y libsndfile1 ffmpeg && rm -rf /var/lib/apt/lists/*
 
-def initialize_model():
-    """Modeli sadece ilk istek geldiğinde (Cold Boot) yükler."""
-    global model
-    
-    if ChatterboxMultilingualTTS is None:
-        raise RuntimeError("Chatterbox kütüphanesi yüklenemediği için model başlatılamıyor.")
+COPY requirements.txt .
 
-    if not os.path.exists(REFERENCE_AUDIO_PATH):
-        raise FileNotFoundError(f"Referans ses dosyası bulunamadı: {REFERENCE_AUDIO_PATH}")
+# 1. Aşama: Chatterbox ve diğer kütüphaneler kendi kafalarına göre kurulsun.
+RUN pip install --no-cache-dir -r requirements.txt
 
-    print("Zümrüt Hoca modeli yükleniyor (Cold Boot)...")
-    
-    # BALYOZ HAMLESİ: GPU çakışmasını önlemek için sistemi ZORLA CPU'da çalıştırıyoruz!
-    device = "cpu"
-    print(f"Kullanılan donanım birimi: {device} (GPU uyumsuzluğu aşıldı)")
-    
-    try:
-        model = ChatterboxMultilingualTTS.from_pretrained(device=device)
-        print("Model başarıyla RAM'e yüklendi!")
-    except Exception as e:
-        print(f"Model başlatılırken kritik bir hata oluştu: {str(e)}")
-        traceback.print_exc()
-        raise e
+# 2. Aşama (ACIMASIZ BALYOZ): Chatterbox'ın kurduğu eski/uyumsuz PyTorch'u 
+# tamamen siliyoruz ve yeni nesil kartları %100 tanıyan sürümü ZORLA kuruyoruz.
+RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cu121 --upgrade --force-reinstall
 
-def handler(job):
-    """RunPod Serverless İşleyici"""
-    global model
-    
-    try:
-        job_input = job.get("input", {})
-        text = job_input.get("text", "")
-        
-        if not text:
-            return {"error": "Lütfen Zümrüt Hoca'nın okuması için bir 'text' parametresi gönderin."}
+COPY . .
 
-        if model is None:
-            initialize_model()
-
-        print(f"Sentezlenen metin: {text[:50]}...")
-
-        # Üretim Aşaması
-        wav = model.generate(
-            text, 
-            language_id="tr", 
-            audio_prompt_path=REFERENCE_AUDIO_PATH
-        )
-
-        buffer = io.BytesIO()
-        ta.save(buffer, wav, model.sr, format="wav")
-        buffer.seek(0)
-        
-        audio_base64 = base64.b64encode(buffer.read()).decode('utf-8')
-
-        return {
-            "status": "success",
-            "audio_base64": audio_base64
-        }
-
-    except Exception as e:
-        error_msg = str(e)
-        print(f"İşlem sırasında hata: {error_msg}")
-        traceback.print_exc()
-        return {
-            "error": "Sentezleme başarısız.",
-            "details": error_msg,
-            "traceback": traceback.format_exc()
-        }
-
-if __name__ == "__main__":
-    runpod.serverless.start({"handler": handler})
+CMD ["python", "-u", "handler.py"]
