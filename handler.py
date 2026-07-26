@@ -21,7 +21,6 @@ REFERENCE_AUDIO_PATH = "zumrut_hoca.WAV"
 def initialize_model():
     global model
     if ChatterboxMultilingualTTS is None:
-        # Hatayı direkt JSON'a kusacak satır:
         raise RuntimeError(f"Kütüphane eksik veya uyumsuz! İŞTE GERÇEK HATA: {import_hata}")
 
     if not os.path.exists(REFERENCE_AUDIO_PATH):
@@ -47,11 +46,29 @@ def handler(job):
         if model is None:
             initialize_model()
 
+        # Modeli çalıştır
         wav = model.generate(
             text, 
             language_id="tr", 
             audio_prompt_path=REFERENCE_AUDIO_PATH
         )
+
+        # 1. ÇÖZÜM: Tensor boyutunu (2D) garantilemek (torchaudio.save hata vermesin diye)
+        if isinstance(wav, torch.Tensor):
+            if wav.ndim == 1:
+                wav = wav.unsqueeze(0)  # (frames,) -> (1, frames) yapıyoruz.
+            
+            # 2. ÇÖZÜM (KRİTİK): Şiddet çok yüksekse (Clipping/Sessizlik sorunu) normalize et
+            if wav.is_floating_point():
+                max_val = wav.abs().max()
+                if max_val > 1.0:
+                    wav = wav / max_val  # Sesi tarayıcının çalabileceği -1.0 ile 1.0 arasına sıkıştır
+            
+            # Modeller bazen float64 döner, wav için float32 garanti olsun
+            wav = wav.to(torch.float32)
+            
+            # İşlemci belleğine al (CPU'da değilse ta.save çökebilir)
+            wav = wav.cpu()
 
         buffer = io.BytesIO()
         ta.save(buffer, wav, model.sr, format="wav")
@@ -67,7 +84,8 @@ def handler(job):
     except Exception as e:
         return {
             "error": "Sentezleme başarısız.",
-            "details": str(e)
+            "details": str(e),
+            "traceback": traceback.format_exc()
         }
 
 if __name__ == "__main__":
