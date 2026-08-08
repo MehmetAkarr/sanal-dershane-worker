@@ -34,6 +34,8 @@ except Exception as e:
     F = None
     punc_norm = None
     np = None
+    torch = None
+    ta = None
     import_hata = f"{e}\nDetay: {traceback.format_exc()}"
 
 model = None
@@ -43,7 +45,7 @@ REFERENCE_AUDIO_PATH = "zumrut_hoca.WAV"
 
 def initialize_model():
     global model, conds_ready
-    if ChatterboxMultilingualTTS is None:
+    if ChatterboxMultilingualTTS is None or torch is None:
         raise RuntimeError(f"Kütüphane eksik veya uyumsuz! İŞTE GERÇEK HATA: {import_hata}")
 
     if not os.path.exists(REFERENCE_AUDIO_PATH):
@@ -58,7 +60,6 @@ def initialize_model():
     print(f"[WORKER] Model + Zümrüt conditionals hazır ({time.time() - t0:.2f}s)")
 
 
-@torch.inference_mode()
 def generate_fast(
     text: str,
     *,
@@ -71,73 +72,76 @@ def generate_fast(
     min_p: float = 0.05,
     top_p: float = 1.0,
 ):
+    """CFG batch=2 + düşük max_new_tokens. Decorator yok — import fail olursa NameError olmasın."""
     global conds_ready
-    assert model is not None
+    assert model is not None and torch is not None
 
-    if not conds_ready or model.conds is None:
-        model.prepare_conditionals(REFERENCE_AUDIO_PATH, exaggeration=exaggeration)
-        conds_ready = True
-    elif float(exaggeration) != float(model.conds.t3.emotion_adv[0, 0, 0].item()):
-        _cond = model.conds.t3
-        model.conds.t3 = T3Cond(
-            speaker_emb=_cond.speaker_emb,
-            cond_prompt_speech_tokens=_cond.cond_prompt_speech_tokens,
-            emotion_adv=exaggeration * torch.ones(1, 1, 1),
-        ).to(device=model.device)
+    with torch.inference_mode():
+        if not conds_ready or model.conds is None:
+            model.prepare_conditionals(REFERENCE_AUDIO_PATH, exaggeration=exaggeration)
+            conds_ready = True
+        elif float(exaggeration) != float(model.conds.t3.emotion_adv[0, 0, 0].item()):
+            _cond = model.conds.t3
+            model.conds.t3 = T3Cond(
+                speaker_emb=_cond.speaker_emb,
+                cond_prompt_speech_tokens=_cond.cond_prompt_speech_tokens,
+                emotion_adv=exaggeration * torch.ones(1, 1, 1),
+            ).to(device=model.device)
 
-    text = punc_norm(text)
-    text_tokens = model.tokenizer.text_to_tokens(
-        text, language_id=language_id.lower() if language_id else None
-    ).to(model.device)
+        text = punc_norm(text)
+        text_tokens = model.tokenizer.text_to_tokens(
+            text, language_id=language_id.lower() if language_id else None
+        ).to(model.device)
 
-    # Multilingual T3: CFG için batch=2 şart (tek batch boş/bozuk wav üretiyordu)
-    text_tokens = torch.cat([text_tokens, text_tokens], dim=0)
+        # Multilingual T3: CFG için batch=2 şart (tek batch boş/bozuk wav üretiyordu)
+        text_tokens = torch.cat([text_tokens, text_tokens], dim=0)
 
-    sot = model.t3.hp.start_text_token
-    eot = model.t3.hp.stop_text_token
-    text_tokens = F.pad(text_tokens, (1, 0), value=sot)
-    text_tokens = F.pad(text_tokens, (0, 1), value=eot)
+        sot = model.t3.hp.start_text_token
+        eot = model.t3.hp.stop_text_token
+        text_tokens = F.pad(text_tokens, (1, 0), value=sot)
+        text_tokens = F.pad(text_tokens, (0, 1), value=eot)
 
-    speech_tokens = model.t3.inference(
-        t3_cond=model.conds.t3,
-        text_tokens=text_tokens,
-        max_new_tokens=int(max_new_tokens),
-        temperature=temperature,
-        cfg_weight=float(cfg_weight),
-        repetition_penalty=repetition_penalty,
-        min_p=min_p,
-        top_p=top_p,
-    )
-    speech_tokens = speech_tokens[0]
-    speech_tokens = drop_invalid_tokens(speech_tokens)
-    speech_tokens = speech_tokens.to(model.device)
+        speech_tokens = model.t3.inference(
+            t3_cond=model.conds.t3,
+            text_tokens=text_tokens,
+            max_new_tokens=int(max_new_tokens),
+            temperature=temperature,
+            cfg_weight=float(cfg_weight),
+            repetition_penalty=repetition_penalty,
+            min_p=min_p,
+            top_p=top_p,
+        )
+        speech_tokens = speech_tokens[0]
+        speech_tokens = drop_invalid_tokens(speech_tokens)
+        speech_tokens = speech_tokens.to(model.device)
 
-    if speech_tokens.numel() < 4:
-        raise RuntimeError(f"Çok kısa speech_tokens: {speech_tokens.numel()}")
+        if speech_tokens.numel() < 4:
+            raise RuntimeError(f"Çok kısa speech_tokens: {speech_tokens.numel()}")
 
-    wav, _ = model.s3gen.inference(
-        speech_tokens=speech_tokens,
-        ref_dict=model.conds.gen,
-    )
-    wav = wav.squeeze(0).detach().cpu().float()
-    if wav.ndim > 1:
-        wav = wav.reshape(-1)
+        wav, _ = model.s3gen.inference(
+            speech_tokens=speech_tokens,
+            ref_dict=model.conds.gen,
+        )
+        wav = wav.squeeze(0).detach().cpu().float()
+        if wav.ndim > 1:
+            wav = wav.reshape(-1)
 
-    # Normalize
-    peak = float(wav.abs().max().clamp(min=1e-8))
-    wav = (wav / peak).clamp(-1.0, 1.0)
+        peak = float(wav.abs().max().clamp(min=1e-8))
+        wav = (wav / peak).clamp(-1.0, 1.0)
 
-    try:
-        wm = model.watermarker.apply_watermark(wav.numpy(), sample_rate=model.sr)
-        wav = torch.from_numpy(np.asarray(wm, dtype=np.float32))
-    except Exception:
-        pass
+        try:
+            wm = model.watermarker.apply_watermark(wav.numpy(), sample_rate=model.sr)
+            wav = torch.from_numpy(np.asarray(wm, dtype=np.float32))
+        except Exception:
+            pass
 
-    return wav, int(model.sr)
+        return wav, int(model.sr)
 
 
-def wav_to_pcm16_b64(wav: torch.Tensor, sr: int) -> str:
+def wav_to_pcm16_b64(wav, sr: int) -> str:
     """Tarayıcının sevdiği PCM 16-bit WAV (float WAV = NotSupportedError)."""
+    if torch is None or ta is None:
+        raise RuntimeError(f"torch/torchaudio yok: {import_hata}")
     wav = wav.detach().cpu().float().reshape(-1)
     peak = float(wav.abs().max().clamp(min=1e-8))
     wav = (wav / peak).clamp(-1.0, 1.0)
